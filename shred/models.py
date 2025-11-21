@@ -136,8 +136,8 @@ def fit(model, train_dataset, valid_dataset,
 
         if patience_counter == patience:
             model.load_state_dict(best_params)
-            train_error = mre(train_dataset.Y, model(train_dataset.X))
-            valid_error = mre(valid_dataset.Y, model(valid_dataset.X))
+            train_error = mre(train_dataset.Y, model(train_dataset.X)).detach()
+            valid_error = mre(valid_dataset.Y, model(valid_dataset.X)).detach()
             
             if verbose == True:
                 print("Training done: Training loss = " + num2p(train_error) + " \t Validation loss = " + num2p(valid_error))
@@ -145,8 +145,8 @@ def fit(model, train_dataset, valid_dataset,
             return torch.tensor(train_error_list).detach().cpu().numpy(), torch.tensor(valid_error_list).detach().cpu().numpy()
     
     model.load_state_dict(best_params)
-    train_error = mre(train_dataset.Y, model(train_dataset.X))
-    valid_error = mre(valid_dataset.Y, model(valid_dataset.X))
+    train_error = mre(train_dataset.Y, model(train_dataset.X)).detach().item()
+    valid_error = mre(valid_dataset.Y, model(valid_dataset.X)).detach().item()
     
     if verbose == True:
     	print("Training done: Training loss = " + num2p(train_error) + " \t Validation loss = " + num2p(valid_error))

@@ -1,7 +1,7 @@
 import gmsh
 from mpi4py import MPI
 from dolfinx.io import gmshio
-
+import numpy as np
 
 def evol_mesh(mesh_factor = 0.011):
     mesh_comm = MPI.COMM_WORLD
