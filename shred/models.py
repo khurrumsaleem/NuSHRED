@@ -70,8 +70,8 @@ class SHRED(torch.nn.Module):
         for param in self.parameters():
             param.requires_grad = True
 
-def fit(model, train_dataset, valid_dataset, 
-        batch_size = 64, epochs = 4000, optim = torch.optim.Adam, lr = 1e-3, 
+def fit(model: torch.nn.Module, train_dataset: torch.utils.data.Dataset, valid_dataset: torch.utils.data.Dataset, 
+        batch_size: int = 64, epochs: int = 4000, optim = torch.optim.Adam, lr: float = 1e-3, 
         loss_function = mse, scaling_factor = None,
         verbose = False, patience = 5):
     '''
@@ -79,21 +79,17 @@ def fit(model, train_dataset, valid_dataset,
     
     Inputs
     	model (`torch.nn.Module`)
-    	training dataset (`torch.Tensor`)
-    	validation dataset (`torch.Tensor`)
+    	training dataset (`torch.utils.data.Dataset`)
+    	validation dataset (`torch.utils.data.Dataset`)
     	batch size (default to 64)
     	number of epochs (default to 4000)
     	optimizer (default to `torch.optim.Adam`)
     	learning rate (default to 0.001)
+        loss function (default to mse)
+        scaling factor for weighted mse (default to None) # used only if loss_function is weighted_mse
     	verbose parameter (default to False) 
     	patience parameter (default to 5)
     '''
-
-    # if verbose: 
-    #     if scaling_factor is not None and loss_function == weighted_mse:
-    #         print("Using weighted MSE with scaling factor")
-    #     else:
-    #         print("Using MSE")
 
     train_loader = DataLoader(train_dataset, shuffle = True, batch_size = batch_size)
     optimizer = optim(model.parameters(), lr = lr)
@@ -152,7 +148,90 @@ def fit(model, train_dataset, valid_dataset,
     	print("Training done: Training loss = " + num2p(train_error) + " \t Validation loss = " + num2p(valid_error))
     
     return torch.tensor(train_error_list).detach().cpu().numpy(), torch.tensor(valid_error_list).detach().cpu().numpy()
- 
+
+
+def fit_memory_efficient(model: torch.nn.Module, train_dataset: torch.utils.data.Dataset, valid_dataset: torch.utils.data.Dataset, 
+        batch_size: int = 64, epochs: int = 4000, optim = torch.optim.Adam, lr: float = 1e-3, 
+        loss_function = mse, scaling_factor = None,
+        verbose = False, patience = 5):
+    
+    # Data Loaders
+    train_loader = DataLoader(train_dataset, shuffle = True, batch_size = batch_size)
+    valid_loader = DataLoader(valid_dataset, shuffle = False, batch_size = batch_size)
+
+    # Optimizer
+    optimizer = optim(model.parameters(), lr = lr)
+
+    # Check device
+    device = next(model.parameters()).device # model already on device
+
+    # Error history
+    train_error_history = []
+    valid_error_history = []
+
+    # Initialization for early stopping
+    patience_counter = 0
+    best_params = deepcopy(model.state_dict())
+    best_valid_error = float('inf')
+
+    for epoch in range(epochs):
+
+        model.train()
+        batch_train_errors = []
+
+        # Training loop
+        for x_batch, y_batch in train_loader:
+
+            optimizer.zero_grad()
+
+            # Compute outputs and loss
+            outputs = model(x_batch.to(device))
+            if scaling_factor is not None and loss_function == weighted_mse:
+                loss = loss_function(outputs, y_batch.to(device), weights = scaling_factor)
+            else:
+                loss = loss_function(outputs, y_batch.to(device))
+            loss.backward()
+            optimizer.step()
+
+            # Store batch training error
+            batch_train_errors.append(mre(y_batch.to(device), outputs).item())
+
+        # Average training error for the epoch
+        epoch_train_error = sum(batch_train_errors) / len(batch_train_errors)
+        train_error_history.append(epoch_train_error)
+
+        # Validation loop
+        model.eval()
+        batch_valid_errors = []
+        with torch.no_grad():
+
+            for x_batch, y_batch in valid_loader:
+                outputs = model(x_batch.to(device))
+                batch_valid_errors.append(mre(y_batch.to(device), outputs).item())
+
+        # Average validation error for the epoch
+        epoch_valid_error = sum(batch_valid_errors) / len(batch_valid_errors)
+        valid_error_history.append(epoch_valid_error)
+
+        if verbose:
+            print(f"Epoch {epoch+1}: Train Loss {epoch_train_error:.6f}, Valid Loss {epoch_valid_error:.6f}", end="\r")
+
+        # Early stopping check
+        if epoch_valid_error < best_valid_error:
+            best_valid_error = epoch_valid_error
+            best_params = deepcopy(model.state_dict())
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                if verbose:
+                    print(f"\nEarly stopping at epoch {epoch+1}. Best Valid Loss: {best_valid_error:.6f}")
+                break
+
+    # Load best model parameters
+    model.load_state_dict(best_params)
+    return train_error_history, valid_error_history
+            
 def forecast(forecaster, input_data, steps, nsensors):
     '''
     Forecast time series in time
@@ -174,16 +253,29 @@ def forecast(forecaster, input_data, steps, nsensors):
 
     return torch.stack(forecast, 1)
 
+def predict_in_batches(model: torch.nn.Module, dataset: torch.utils.data.Dataset, batch_size=64):
+    """
+    Runs inference on a dataset batch-by-batch to save memory, 
+    then concatenates the results.
+    """
+    # 1. Create a loader for the test set
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-
-
-
-
-
-
-
-
-
-
-
-
+    device = next(model.parameters()).device  # Get the device of the model (GPU)
+    
+    model.eval() # Set model to evaluation mode
+    predictions = []
+    
+    with torch.no_grad():
+        for x_batch, _ in loader:
+            # Move batch to the same device as the model (GPU)
+            x_batch = x_batch.to(device)
+            
+            # Predict
+            out = model(x_batch)
+            
+            # Move result back to CPU immediately to free up GPU memory
+            predictions.append(out.cpu())
+            
+    # Stitch all batches back together into one tensor
+    return torch.cat(predictions, dim=0)
